@@ -1,69 +1,76 @@
-from fastapi import FastAPI, Request
-from authlib.integrations.starlette_client import OAuth
-from fastapi.responses import JSONResponse
-from starlette.middleware.sessions import SessionMiddleware
-from authlib.jose import jwt
-from fastapi.responses import RedirectResponse
-from authlib.jose.errors import JoseError
-import httpx
+import datetime  # to calculate expiration of the JWT
+import uvicorn
+from fastapi import FastAPI, Depends, HTTPException, Security, Request, Security,HTTPException, Response
+from fastapi.responses import RedirectResponse , JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi_sso.sso.google import GoogleSSO  # pip install fastapi-sso
+from fastapi_sso.sso.base import OpenID
+from jose import jwt  # pip install python-jose[cryptography]
+
 
 app = FastAPI()
-
-oauth = OAuth()
-
-SECRET_KEY = "your-secret-key-here"
-
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
-
-oauth.register(
-    name="google",
-    client_id="43408078560-vqll83sca0454in8n6a85kjlbh1dg5ns.apps.googleusercontent.com",
-    client_secret="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",
-    authorize_url="https://accounts.google.com/o/oauth2/auth",
-    access_token_url="https://oauth2.googleapis.com/token",
-    jwks_uri="https://www.googleapis.com/oauth2/v3/certs",
-    client_kwargs={
-        "scope": "openid email profile",
-        "response_type": "code"
-    }
-)
-
-@app.get("/google_login")
-async def login(request: Request):
-    redirect_uri = request.url_for("auth")
-    return await oauth.google.authorize_redirect(request, redirect_uri, prompt="select_account")
+CLIENT_ID = "43408078560-vqll83sca0454in8n6a85kjlbh1dg5ns.apps.googleusercontent.com"  # <-- paste your client id here
+CLIENT_SECRET = "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" # <-- paste your client secret here
+SECRET_KEY = "this-is-very-secret"  # used to sign JWTs, make sure it is really secret
 
 
-async def fetch_jwks(uri):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(uri)
-        response.raise_for_status()
-        return response.json()
+sso = GoogleSSO(client_id=CLIENT_ID, client_secret=CLIENT_SECRET, redirect_uri="http://127.0.0.1:8000/auth")
 
-@app.get("/auth")
-async def auth(request: Request):
+security = HTTPBearer()
+app = FastAPI()
+
+
+#Logic that looks on decoded data from JWT that contains user session
+async def get_logged_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> OpenID:
+    """Get user's JWT from the header, parse it and return the user's OpenID."""
     try:
-        token = await oauth.google.authorize_access_token(request)
-        id_token = token.get('id_token')
-        jwks_uri = "https://www.googleapis.com/oauth2/v3/certs"
-        jwks = await fetch_jwks(jwks_uri)
-        claims = jwt.decode(id_token, jwks)
-        claims.validate()
-        # Añadir información del usuario a la sesión
-        request.session['user'] = dict(claims)
-        return JSONResponse(content={"user": claims})
-    except JoseError as e:
-        print(f"JOSE Error: {e}")
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    except Exception as e:
-        print(f"General Error: {e}")
-        return JSONResponse(status_code=400, content={"error": str(e)})
+        token = credentials.credentials
+        claims = jwt.decode(token, key=SECRET_KEY, algorithms=["HS256"])
+        print(claims)
+        return OpenID(**claims["pld"])
+    except Exception as error:
+        raise HTTPException(status_code=401, detail="Invalid authentication credentials") from error
 
 
-@app.get("/view-session")
-def view_session(request: Request):
-    return request.session
-@app.get("/logout")
-async def logout(request: Request):
-    request.session.pop('user', None)
-    return RedirectResponse(url='/', status_code=302)
+#Test of protected route --> Points logic of get_logged_user
+@app.get("/protected")
+async def protected_endpoint(user: OpenID = Depends(get_logged_user)):
+    return {"message": f"You are very welcome, {user.email}!"}
+
+
+@app.get("/google/auth/login")
+async def login():
+    """Redirect the user to the Google login page."""
+    with sso:
+        return await sso.get_login_redirect(
+            params={"prompt": "consent", "access_type": "offline"}
+            )
+
+
+#Check option to create id used as return for User Server end instead of JWT that can be co-related to original JWT saved in server side (cookies or DB)
+@app.get("/auth")
+async def login_callback(request: Request):
+    with sso:
+        openid = await sso.verify_and_process(request)
+        if not openid:
+            raise HTTPException(status_code=401, detail="Authentication failed")
+    expiration = datetime.datetime.now(tz=datetime.timezone.utc) + datetime.timedelta(days=1)
+    token = jwt.encode({"pld": openid.model_dump(), "exp": expiration, "sub": openid.id}, key=SECRET_KEY, algorithm="HS256")
+    response = Response()
+    response = JSONResponse(content={"message": "Logged in successfully"}, status_code=200)
+    response.set_cookie(key="uid", value=token, httponly=True, max_age=1800, samesite='Lax', secure=True)
+    return response
+
+
+# Pending Adjustment
+@app.get("/auth/logout")
+async def logout():
+    """Forget the user's session."""
+    response = RedirectResponse(url="/prot")
+    response.delete_cookie(key="uid")
+    return response
+
+
+if __name__ == "__main__":
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
