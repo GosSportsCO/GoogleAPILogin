@@ -1,76 +1,73 @@
-import datetime  # to calculate expiration of the JWT
+from contextlib import asynccontextmanager
+from db import database
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, Security, Request, Security,HTTPException, Response
+from user_agents import parse
+from fastapi import FastAPI, Depends, HTTPException, Security, Request,HTTPException, Response
 from fastapi.responses import RedirectResponse , JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi_sso.sso.google import GoogleSSO  # pip install fastapi-sso
-from fastapi_sso.sso.base import OpenID
 from jose import jwt  # pip install python-jose[cryptography]
+from sso_methods import AuthConfig
 
 
-app = FastAPI()
-CLIENT_ID = "43408078560-vqll83sca0454in8n6a85kjlbh1dg5ns.apps.googleusercontent.com"  # <-- paste your client id here
-CLIENT_SECRET = "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" # <-- paste your client secret here
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    await database.connect()
+    try:
+        yield
+    finally:
+        await database.disconnect()
+
+app = FastAPI(lifespan=app_lifespan)
+
 SECRET_KEY = "this-is-very-secret"  # used to sign JWTs, make sure it is really secret
 
+# Crear instancias de AuthConfig para cada proveedor
+google_auth = AuthConfig(
+    client_id="43408078560-vqll83sca0454in8n6a85kjlbh1dg5ns.apps.googleusercontent.com",
+    client_secret="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",
+    redirect_uri="http://127.0.0.1:8000/auth/verif/google",
+    provider="google"
+)
 
-sso = GoogleSSO(client_id=CLIENT_ID, client_secret=CLIENT_SECRET, redirect_uri="http://127.0.0.1:8000/auth")
-
-security = HTTPBearer()
-app = FastAPI()
-
-
-#Logic that looks on decoded data from JWT that contains user session
-async def get_logged_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> OpenID:
-    """Get user's JWT from the header, parse it and return the user's OpenID."""
-    try:
-        token = credentials.credentials
-        claims = jwt.decode(token, key=SECRET_KEY, algorithms=["HS256"])
-        print(claims)
-        return OpenID(**claims["pld"])
-    except Exception as error:
-        raise HTTPException(status_code=401, detail="Invalid authentication credentials") from error
+# Suponiendo que tengas configuración similar para Facebook
+# facebook_auth = AuthConfig(
+#     client_id="facebook_client_id",
+#     client_secret="facebook_secret",
+#     redirect_uri="http://127.0.0.1:8000/auth/facebook",
+#     provider="facebook"
+# )
 
 
-#Test of protected route --> Points logic of get_logged_user
-@app.get("/protected")
-async def protected_endpoint(user: OpenID = Depends(get_logged_user)):
-    return {"message": f"You are very welcome, {user.email}!"}
+#Funcion that checks provider and runs login_redirect
+@app.get("/auth/login/{provider}")
+async def login(provider: str):
+    if provider == "google":
+        return await google_auth.get_login_redirect(prompt="consent", access_type="offline")
+    # elif provider == "facebook":
+    #     return await facebook_auth.get_login_redirect()
+    else:
+        raise HTTPException(status_code=404, detail="Provider not supported")
+    
 
+#Function that fetch provider response data to generate a jwt
+@app.get("/auth/verif/{provider}")
+async def auth_callback(provider: str, request: Request):
+    if provider == "google":
+        auth_config = google_auth
+    # elif provider == "facebook":
+    #     openid = await facebook_auth.verify_and_process(request)
+    else:
+        raise HTTPException(status_code=404, detail="Provider not supported")
 
-@app.get("/google/auth/login")
-async def login():
-    """Redirect the user to the Google login page."""
-    with sso:
-        return await sso.get_login_redirect(
-            params={"prompt": "consent", "access_type": "offline"}
-            )
+    openid = await auth_config.verify(request)
+    return await auth_config.process(request, openid)
 
-
-#Check option to create id used as return for User Server end instead of JWT that can be co-related to original JWT saved in server side (cookies or DB)
-@app.get("/auth")
-async def login_callback(request: Request):
-    with sso:
-        openid = await sso.verify_and_process(request)
-        if not openid:
-            raise HTTPException(status_code=401, detail="Authentication failed")
-    expiration = datetime.datetime.now(tz=datetime.timezone.utc) + datetime.timedelta(days=1)
-    token = jwt.encode({"pld": openid.model_dump(), "exp": expiration, "sub": openid.id}, key=SECRET_KEY, algorithm="HS256")
-    response = Response()
-    response = JSONResponse(content={"message": "Logged in successfully"}, status_code=200)
-    response.set_cookie(key="uid", value=token, httponly=True, max_age=1800, samesite='Lax', secure=True)
-    return response
-
-
-# Pending Adjustment
+#Logout Function by deleting cookie not revision from server user session
 @app.get("/auth/logout")
 async def logout():
-    """Forget the user's session."""
-    response = RedirectResponse(url="/prot")
+    response = JSONResponse(content={"message": "You have been logged out"}, status_code=200)
     response.delete_cookie(key="uid")
     return response
 
-
 if __name__ == "__main__":
-
+    import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
