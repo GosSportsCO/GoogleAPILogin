@@ -12,7 +12,7 @@ Tasks Done:
 Project URL https://gossportsco.atlassian.net/browse/GD-2
 
 
-Project Next Steps
+# Project Next Steps
 This README outlines the next steps to be taken in the project. Each step is described briefly for clarity.
 
 1. Define Logging Logic with Trigger Action in Database
