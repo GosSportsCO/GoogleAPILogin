@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from schemas.request.User.auth_schemas import google_auth, platform_auth
+from schemas.request.Auth.auth_schemas import google_auth, platform_auth
 from schemas.request.User.user_auth_schema import RegisterForm
 
 router = APIRouter(prefix="/auth", tags=["auth"], responses={401: {"User": "Not authorized"}})
