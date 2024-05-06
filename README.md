@@ -28,4 +28,4 @@ Develop logic to handle the status of new registered users through the platform 
 Build login logic and design the corresponding user interface and experience (UI/UX). A seamless and intuitive login process is essential for user engagement and satisfaction.
 
 5. Refactor Code Structure and Improve Documentation
-Delve deeper into the code structure to achieve a cleaner interface. Additionally, add documentation to facilitate future TypeScript (TS) development and maintenance.
+Delve deeper into the code structure to achieve a cleaner interface. Additionally, add documentation to facilitate future development and maintenance.
